@@ -1,0 +1,574 @@
+from supabase import create_client, Client
+import os
+import logging
+from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta
+import uuid
+
+logger = logging.getLogger(__name__)
+
+# Initialize Supabase client lazily
+from dotenv import load_dotenv
+
+supabase: Client = None
+
+def get_supabase_client():
+    global supabase
+    if supabase is None:
+        load_dotenv()  # Load env vars here
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+        if not supabase_url or not supabase_key:
+            logger.warning("Supabase credentials not found in environment variables")
+            return None
+        else:
+            supabase = create_client(supabase_url, supabase_key)
+            logger.info("Supabase client initialized successfully")
+    return supabase
+
+async def find_or_create_patient(phone_number: str, full_name: str = None) -> Dict[str, Any]:
+    """
+    Find existing patient by phone number or create a new one.
+    
+    Args:
+        phone_number: Patient's phone number
+        full_name: Patient's full name (optional)
+    
+    Returns:
+        Patient record dictionary
+    """
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        # Try to find existing patient
+        result = supabase.table('patients').select('*').eq('phone_number', phone_number).execute()
+        
+        if result.data and len(result.data) > 0:
+            logger.info(f"Found existing patient: {phone_number}")
+            return result.data[0]
+        
+        # Create new patient if not found
+        patient_data = {
+            'phone_number': phone_number,
+            'full_name': full_name or f"Patient {phone_number[-4:]}",  # Use last 4 digits as default name
+            'created_at': datetime.now().isoformat()
+        }
+        
+        result = supabase.table('patients').insert(patient_data).execute()
+        
+        if result.data and len(result.data) > 0:
+            logger.info(f"Created new patient: {phone_number}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to create patient: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error in find_or_create_patient: {e}")
+        return None
+
+async def update_patient_email(patient_id: str, email: str) -> Dict[str, Any]:
+    """
+    Update patient's email address.
+    
+    Args:
+        patient_id: Patient's ID
+        email: Patient's email address
+    
+    Returns:
+        Updated patient record dictionary
+    """
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        # Update patient email
+        result = supabase.table('patients')\
+            .update({'email': email, 'updated_at': datetime.now().isoformat()})\
+            .eq('id', patient_id)\
+            .execute()
+        
+        if result.data and len(result.data) > 0:
+            logger.info(f"Updated patient email: {patient_id} -> {email}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to update patient email: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error updating patient email: {e}")
+        return None
+
+async def get_available_slots(limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    Get available appointment slots.
+    
+    Args:
+        limit: Maximum number of slots to return
+    
+    Returns:
+        List of available slot dictionaries
+    """
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return []
+            
+        # Get slots that are not booked and in the future
+        current_time = datetime.now().isoformat()
+        
+        result = supabase.table('doctor_availability')\
+            .select('*')\
+            .eq('is_booked', False)\
+            .gte('slot_start_time', current_time)\
+            .order('slot_start_time')\
+            .limit(limit)\
+            .execute()
+        
+        if result.data:
+            logger.info(f"Found {len(result.data)} available slots")
+            return result.data
+        else:
+            logger.info("No available slots found")
+            return []
+            
+    except Exception as e:
+        logger.error(f"Error getting available slots: {e}")
+        return []
+
+async def book_slot(slot_id: str, patient_id: str) -> Dict[str, Any]:
+    """
+    Book an appointment slot for a patient.
+    
+    Args:
+        slot_id: ID of the slot to book
+        patient_id: ID of the patient
+    
+    Returns:
+        Appointment record dictionary or None if failed
+    """
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        # First, mark the slot as booked
+        slot_update = supabase.table('doctor_availability')\
+            .update({'is_booked': True})\
+            .eq('id', slot_id)\
+            .eq('is_booked', False)\
+            .execute()  # Only update if not already booked
+        
+        if not slot_update.data or len(slot_update.data) == 0:
+            logger.error("Failed to book slot - slot may already be booked")
+            return None
+        
+        # Get the slot details
+        slot_result = supabase.table('doctor_availability')\
+            .select('*')\
+            .eq('id', slot_id)\
+            .execute()
+        
+        if not slot_result.data or len(slot_result.data) == 0:
+            logger.error("Could not retrieve slot details after booking")
+            return None
+        
+        slot = slot_result.data[0]
+        
+        # Create appointment record
+        appointment_data = {
+            'patient_id': patient_id,
+            'availability_id': slot_id,
+            'appointment_time': slot['slot_start_time'],
+            'status': 'confirmed',
+            'created_at': datetime.now().isoformat()
+        }
+        
+        appointment_result = supabase.table('appointments')\
+            .insert(appointment_data)\
+            .execute()
+        
+        if appointment_result.data and len(appointment_result.data) > 0:
+            logger.info(f"Successfully created appointment for patient {patient_id}")
+            return appointment_result.data[0]
+        else:
+            # If appointment creation fails, unbook the slot
+            supabase.table('doctor_availability')\
+                .update({'is_booked': False})\
+                .eq('id', slot_id)\
+                .execute()
+            logger.error("Failed to create appointment record")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error booking slot: {e}")
+        # Try to unbook the slot if there was an error
+        try:
+            supabase.table('doctor_availability')\
+                .update({'is_booked': False})\
+                .eq('id', slot_id)\
+                .execute()
+        except:
+            pass
+        return None
+
+async def create_appointment(patient_id: str, slot_id: str, appointment_time: str) -> Dict[str, Any]:
+    """
+    Create an appointment record.
+    
+    Args:
+        patient_id: ID of the patient
+        slot_id: ID of the availability slot
+        appointment_time: Time of the appointment
+    
+    Returns:
+        Appointment record dictionary
+    """
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        appointment_data = {
+            'patient_id': patient_id,
+            'availability_id': slot_id,
+            'appointment_time': appointment_time,
+            'status': 'confirmed',
+            'created_at': datetime.now().isoformat()
+        }
+        
+        result = supabase.table('appointments').insert(appointment_data).execute()
+        
+        if result.data and len(result.data) > 0:
+            logger.info(f"Created appointment: {result.data[0]['id']}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to create appointment: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error creating appointment: {e}")
+        return None
+
+async def get_patient_appointments(patient_id: str) -> List[Dict[str, Any]]:
+    """
+    Get all appointments for a patient.
+    
+    Args:
+        patient_id: ID of the patient
+    
+    Returns:
+        List of appointment dictionaries
+    """
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return []
+            
+        result = supabase.table('appointments')\
+            .select('*, doctor_availability(*)')\
+            .eq('patient_id', patient_id)\
+            .order('appointment_time')\
+            .execute()
+        
+        return result.data if result.data else []
+        
+    except Exception as e:
+        logger.error(f"Error getting patient appointments: {e}")
+        return []
+
+async def cancel_appointment(appointment_id: str) -> bool:
+    """
+    Cancel an appointment and free up the slot.
+    
+    Args:
+        appointment_id: ID of the appointment to cancel
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return False
+            
+        # Get appointment details
+        appointment_result = supabase.table('appointments')\
+            .select('*')\
+            .eq('id', appointment_id)\
+            .execute()
+        
+        if not appointment_result.data or len(appointment_result.data) == 0:
+            logger.error("Appointment not found")
+            return False
+        
+        appointment = appointment_result.data[0]
+        
+        # Update appointment status to cancelled
+        cancel_result = supabase.table('appointments')\
+            .update({'status': 'cancelled'})\
+            .eq('id', appointment_id)\
+            .execute()
+        
+        if cancel_result.data and len(cancel_result.data) > 0:
+            # Free up the slot
+            supabase.table('doctor_availability')\
+                .update({'is_booked': False})\
+                .eq('id', appointment['availability_id'])\
+                .execute()
+            
+            logger.info(f"Successfully cancelled appointment: {appointment_id}")
+            return True
+        else:
+            logger.error("Failed to cancel appointment")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error cancelling appointment: {e}")
+        return False
+
+async def add_availability_slots(slots: List[Dict[str, Any]]) -> bool:
+    """
+    Add new availability slots (for admin use).
+    
+    Args:
+        slots: List of slot dictionaries with start_time and end_time
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return False
+            
+        result = supabase.table('doctor_availability').insert(slots).execute()
+        
+        if result.data:
+            logger.info(f"Added {len(result.data)} availability slots")
+            return True
+        else:
+            logger.error("Failed to add availability slots")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error adding availability slots: {e}")
+        return False
+
+# Enhanced onboarding functions
+async def update_patient_onboarding_step(patient_id: str, step: str) -> Dict[str, Any]:
+    """Update patient's current onboarding step."""
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        result = supabase.table('patients')\
+            .update({'onboarding_step': step, 'updated_at': datetime.now().isoformat()})\
+            .eq('id', patient_id)\
+            .execute()
+            
+        if result.data and len(result.data) > 0:
+            logger.info(f"Updated patient onboarding step: {patient_id} -> {step}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to update onboarding step: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error updating onboarding step: {e}")
+        return None
+
+async def update_patient_age(patient_id: str, age: int) -> Dict[str, Any]:
+    """Update patient's age."""
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        result = supabase.table('patients')\
+            .update({'age': age, 'onboarding_step': 'gender', 'updated_at': datetime.now().isoformat()})\
+            .eq('id', patient_id)\
+            .execute()
+            
+        if result.data and len(result.data) > 0:
+            logger.info(f"Updated patient age: {patient_id} -> {age}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to update age: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error updating age: {e}")
+        return None
+
+async def update_patient_gender(patient_id: str, gender: str) -> Dict[str, Any]:
+    """Update patient's gender."""
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        result = supabase.table('patients')\
+            .update({'gender': gender, 'onboarding_step': 'blood_group', 'updated_at': datetime.now().isoformat()})\
+            .eq('id', patient_id)\
+            .execute()
+            
+        if result.data and len(result.data) > 0:
+            logger.info(f"Updated patient gender: {patient_id} -> {gender}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to update gender: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error updating gender: {e}")
+        return None
+
+async def update_patient_blood_group(patient_id: str, blood_group: str) -> Dict[str, Any]:
+    """Update patient's blood group."""
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        # Validate blood group
+        valid_blood_groups = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
+        if blood_group.upper() not in valid_blood_groups:
+            logger.error(f"Invalid blood group: {blood_group}")
+            return None
+            
+        result = supabase.table('patients')\
+            .update({'blood_group': blood_group.upper(), 'onboarding_step': 'symptoms', 'updated_at': datetime.now().isoformat()})\
+            .eq('id', patient_id)\
+            .execute()
+            
+        if result.data and len(result.data) > 0:
+            logger.info(f"Updated patient blood group: {patient_id} -> {blood_group}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to update blood group: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error updating blood group: {e}")
+        return None
+
+async def update_patient_symptoms(patient_id: str, symptoms: str) -> Dict[str, Any]:
+    """Update patient's symptoms."""
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        result = supabase.table('patients')\
+            .update({'symptoms': symptoms, 'onboarding_step': 'allergies', 'updated_at': datetime.now().isoformat()})\
+            .eq('id', patient_id)\
+            .execute()
+            
+        if result.data and len(result.data) > 0:
+            logger.info(f"Updated patient symptoms: {patient_id}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to update symptoms: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error updating symptoms: {e}")
+        return None
+
+async def update_patient_allergies(patient_id: str, allergies: str) -> Dict[str, Any]:
+    """Update patient's allergies and complete onboarding."""
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        result = supabase.table('patients')\
+            .update({
+                'allergies': allergies, 
+                'onboarding_step': 'completed', 
+                'onboarding_completed': True,
+                'updated_at': datetime.now().isoformat()
+            })\
+            .eq('id', patient_id)\
+            .execute()
+            
+        if result.data and len(result.data) > 0:
+            logger.info(f"Updated patient allergies and completed onboarding: {patient_id}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to update allergies: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error updating allergies: {e}")
+        return None
+
+async def create_appointment_request(patient_id: str, requested_date: datetime, requested_time: str, reason: str = None) -> Dict[str, Any]:
+    """Create a custom appointment request."""
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        request_data = {
+            'patient_id': patient_id,
+            'requested_date': requested_date.isoformat(),
+            'requested_time': requested_time,
+            'reason': reason,
+            'status': 'pending'
+        }
+        
+        result = supabase.table('appointment_requests').insert(request_data).execute()
+        
+        if result.data and len(result.data) > 0:
+            logger.info(f"Created appointment request for patient: {patient_id}")
+            return result.data[0]
+        else:
+            logger.error(f"Failed to create appointment request: {result}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error creating appointment request: {e}")
+        return None
+
+async def get_patient_onboarding_status(patient_id: str) -> Dict[str, Any]:
+    """Get patient's current onboarding status."""
+    try:
+        if not supabase:
+            logger.error("Supabase client not initialized")
+            return None
+            
+        result = supabase.table('patients')\
+            .select('onboarding_step, onboarding_completed, age, gender, blood_group, symptoms, allergies')\
+            .eq('id', patient_id)\
+            .execute()
+            
+        if result.data and len(result.data) > 0:
+            return result.data[0]
+        else:
+            logger.error(f"Patient not found: {patient_id}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error getting onboarding status: {e}")
+        return None
+
+# Test function to check database connection
+async def test_connection() -> bool:
+    """Test the Supabase connection."""
+    try:
+        if not supabase:
+            return False
+            
+        result = supabase.table('patients').select('count').execute()
+        logger.info("Supabase connection successful")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Supabase connection test failed: {e}")
+        return False 
