@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: doctor-ai-whatsapp-bot
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_PHONE_NUMBER
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: GOOGLE_CALENDAR_ORGANIZER_EMAIL
+        sync: false
+      - key: DOCSER_API_URL
+        sync: false
+      - key: DOCSER_API_TOKEN
+        sync: false
+      - key: DOCSER_ORG_ID
+        sync: false
+      - key: DOCSER_COLLECTION_NAME
+        sync: false

@@ -1,3 +1,4 @@
+import re
 import google.generativeai as genai
 import json
 import os
@@ -475,7 +476,7 @@ def extract_slot_number(message: str) -> int:
 
 async def generate_dermatology_response(query: str) -> str:
     """
-    Queries the Docser API to get answers for hair health questions.
+    Queries the Docser API to get answers for hair health questions and cleans the response.
     """
     logger.info(f"Querying Docser API for: '{query}'")
     
@@ -503,35 +504,32 @@ async def generate_dermatology_response(query: str) -> str:
         'X-Api-Org': org_id,
     }
 
-    # RECOMMENDED: Define granular timeouts.
-    # 10 seconds to connect, 100 seconds to read the response.
     timeout_config = httpx.Timeout(10.0, read=100.0)
 
     try:
         async with httpx.AsyncClient() as client:
-            # Use the new timeout configuration
             response = await client.post(api_url, headers=headers, data=payload, timeout=timeout_config)
-            
             response.raise_for_status()
 
-            # Handle both JSON and text responses
             try:
-                # Try to parse as JSON first
                 json_response = response.json()
-                if 'response' in json_response:
-                    api_answer = json_response['response']
-                else:
-                    api_answer = str(json_response)
+                api_answer = json_response.get('response', str(json_response))
             except (ValueError, json.JSONDecodeError):
-                # Fall back to plain text
                 api_answer = response.text
             
-            if not api_answer or api_answer.strip() == "":
+            if not api_answer or not api_answer.strip():
                  logger.warning("Docser API returned an empty response.")
                  return "I couldn't find a specific answer for your question at the moment. Could you please rephrase it?"
 
-            logger.info("Successfully received response from Docser API.")
-            return api_answer.strip()
+            logger.info("Successfully received response from Docser API. Cleaning sources...")
+
+            # --- NEW CLEANING LOGIC ---
+            # This regex finds the entire source citation block and removes it.
+            citation_pattern = r'\s*\[source\]\(https?://[^\)]+\)\s*Page:\s*[\d,\s]+\.'
+            cleaned_answer = re.sub(citation_pattern, '', api_answer)
+            # --- END OF NEW LOGIC ---
+
+            return cleaned_answer.strip()
 
     except httpx.ReadTimeout:
         logger.error(f"ReadTimeout occurred when calling Docser API. The server took too long to respond.")

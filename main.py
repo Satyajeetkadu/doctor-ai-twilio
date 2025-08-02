@@ -44,21 +44,35 @@ async def get_booking_context(patient: dict) -> dict:
             return {}
     return {}
 
-async def send_thinking_loop(phone_number: str, stop_event: asyncio.Event):
-    """Continuously sends thinking/analysing messages until the stop_event is set."""
-    messages = ["Thinking...", "Analysing..."]
-    i = 0
-    while not stop_event.is_set():
+async def send_status_updates(phone_number: str, stop_event: asyncio.Event):
+    """Sends a timed, sequential series of status updates."""
+    # Define the sequence of messages and the delay after each one
+    status_messages = [
+        ("Searching...", 1.5),
+        ("Retrieving...", 2.0),
+        ("Thinking...", 2.5),
+        ("Analysing...", 2.0)
+    ]
+    
+    for message, delay in status_messages:
+        # Before sending the next message, check if the main task has already finished
+        if stop_event.is_set():
+            logger.info("Main task finished early. Halting status updates.")
+            break
+        
         try:
-            # Send the next message in the cycle
-            await send_whatsapp_message(phone_number, messages[i % len(messages)])
-            i += 1
-            # Wait for a few seconds before the next message, but check frequently for the stop signal
-            await asyncio.wait_for(stop_event.wait(), timeout=2.5)
+            # Send the status update
+            await send_whatsapp_message(phone_number, message)
+            # Wait for the specified delay, but allow the stop_event to interrupt the wait
+            await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            # If the wait is interrupted, it means the main task finished.
+            break
         except asyncio.TimeoutError:
-            # This is expected, it means the main task is still running. Continue the loop.
+            # This is the expected behavior, meaning we waited the full delay.
+            # Continue to the next message in the sequence.
             continue
-    logger.info("Stopping the thinking loop.")
+            
+    logger.info("Stopping the status update sequence.")
 
 @app.get("/")
 async def health_check():
@@ -300,26 +314,23 @@ async def whatsapp_webhook(From: str = Form(...), Body: str = Form(...)):
         elif intent == 'dermatology_query':
             # --- START: DYNAMIC FEEDBACK FLOW ---
             
-            # 1. Send the initial message immediately.
-            await send_whatsapp_message(phone_number, "Searching from my medical knowledge base...")
-            
-            # 2. Create a signal to stop the background task.
+            # 1. Create a signal to stop the background task.
             stop_loop_event = asyncio.Event()
             
-            # 3. Start the background task that sends "Thinking..." and "Analysing..."
-            thinking_task = asyncio.create_task(send_thinking_loop(phone_number, stop_loop_event))
+            # 2. Start the new background task that sends sequential status updates.
+            status_task = asyncio.create_task(send_status_updates(phone_number, stop_loop_event))
             
-            # 4. Run the time-consuming AI call.
+            # 3. Run the time-consuming AI call.
             logger.info("[main] Calling generate_dermatology_response...")
             dermatology_response = await generate_dermatology_response(Body)
             logger.info(f"[main] Received response from Docser API: '{dermatology_response[:100] if dermatology_response else 'None'}...'")
             
-            # 5. Signal the background task to stop.
+            # 4. Signal the background task to stop.
             stop_loop_event.set()
-            await thinking_task # Wait for the loop to finish its current iteration and exit.
+            await status_task # Wait for the status loop to finish its current iteration and exit.
             
-            # 6. Deliver the final response.
-            await send_whatsapp_message(phone_number, "Drafting response...")
+            # 5. Deliver the final response, including "Drafting...".
+            await send_whatsapp_message(phone_number, "Drafting...")
             await asyncio.sleep(1.5) # Quick pause for realism.
             
             if dermatology_response:
