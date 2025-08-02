@@ -523,11 +523,11 @@ async def generate_dermatology_response(query: str) -> str:
 
             logger.info("Successfully received response from Docser API. Cleaning sources...")
 
-            # --- NEW CLEANING LOGIC ---
-            # This regex finds the entire source citation block and removes it.
-            citation_pattern = r'\s*\[source\]\(https?://[^\)]+\)\s*Page:\s*[\d,\s]+\.'
-            cleaned_answer = re.sub(citation_pattern, '', api_answer)
-            # --- END OF NEW LOGIC ---
+            # --- FINAL CLEANING LOGIC ---
+            # This regex now handles "Page:" and "Pages:" by making the 's' optional with 's?'.
+            citation_pattern = r'\s*\[.*?Source\]\(https?://[^\)]+\)\s*Pages?:\s*[\d,\s]+\.'
+            cleaned_answer = re.sub(citation_pattern, '', api_answer, flags=re.IGNORECASE)
+            # --- END OF FINAL LOGIC ---
 
             return cleaned_answer.strip()
 
