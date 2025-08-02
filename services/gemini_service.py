@@ -523,9 +523,9 @@ async def generate_dermatology_response(query: str) -> str:
 
             logger.info("Successfully received response from Docser API. Cleaning sources...")
 
-            # --- FINAL CLEANING LOGIC ---
-            # This regex now handles "Page:" and "Pages:" by making the 's' optional with 's?'.
-            citation_pattern = r'\s*\[.*?Source\]\(https?://[^\)]+\)\s*Pages?:\s*[\d,\s]+\.'
+            # --- FINAL, MORE GENERIC CLEANING LOGIC ---
+            # This regex finds any markdown link followed by "Page(s):" and any numbers/commas/hyphens.
+            citation_pattern = r'\s*\[[^\]]+\]\((https?|ftp)://[^\s/$.?#].[^\s]*\)\s*Pages?:\s*[\d,\s\-]+\.'
             cleaned_answer = re.sub(citation_pattern, '', api_answer, flags=re.IGNORECASE)
             # --- END OF FINAL LOGIC ---
 
